@@ -926,6 +926,8 @@ from api.config import (
     save_settings,
     set_hermes_default_model,
     model_with_provider_context,
+    get_prompt_cache_status,
+    set_prompt_cache_enabled,
     get_reasoning_status,
     set_reasoning_display,
     set_reasoning_effort,
@@ -3445,7 +3447,28 @@ def handle_get(handler, parsed) -> bool:
             # service worker cache busts automatically on every new deploy.
             from urllib.parse import quote
             from api.updates import WEBUI_VERSION
-            version_token = quote(WEBUI_VERSION, safe="")
+            # Include shell mtimes too so local dirty static edits refresh
+            # before they are committed and get a new git-derived version.
+            shell_stamp = 0
+            for rel in (
+                "index.html",
+                "style.css",
+                "boot.js",
+                "ui.js",
+                "messages.js",
+                "sessions.js",
+                "panels.js",
+                "commands.js",
+                "icons.js",
+                "i18n.js",
+                "workspace.js",
+                "onboarding.js",
+            ):
+                try:
+                    shell_stamp = max(shell_stamp, (static_root / rel).stat().st_mtime_ns)
+                except OSError:
+                    pass
+            version_token = quote(f"{WEBUI_VERSION}-{shell_stamp}", safe="")
             text = sw_path.read_text(encoding="utf-8").replace(
                 "__WEBUI_VERSION__", version_token
             )
@@ -3575,6 +3598,9 @@ def handle_get(handler, parsed) -> bool:
         # reads display.show_reasoning and agent.reasoning_effort from
         # the active profile's config.yaml).
         return j(handler, get_reasoning_status())
+
+    if parsed.path == "/api/prompt-cache":
+        return j(handler, get_prompt_cache_status())
 
     if parsed.path == "/api/onboarding/status":
         return j(handler, get_onboarding_status())
@@ -4618,6 +4644,16 @@ def handle_post(handler, parsed) -> bool:
             if effort is not None:
                 return j(handler, set_reasoning_effort(effort))
             return bad(handler, "reasoning: must supply 'display' or 'effort'")
+        except ValueError as e:
+            return bad(handler, str(e))
+        except RuntimeError as e:
+            return bad(handler, str(e), 500)
+
+    if parsed.path == "/api/prompt-cache":
+        try:
+            if "enabled" not in body:
+                return bad(handler, "prompt-cache: must supply 'enabled'")
+            return j(handler, set_prompt_cache_enabled(body.get("enabled")))
         except ValueError as e:
             return bad(handler, str(e))
         except RuntimeError as e:

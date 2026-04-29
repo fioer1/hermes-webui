@@ -318,6 +318,46 @@ function mobileSwitchPanel(name){
   }
 }
 
+// ── Chat layout preference ─────────────────────────────────────────────────
+const CHAT_LAYOUT_KEY='hermes-webui-chat-layout';
+
+function _readChatLayoutPreference(){
+  try{
+    return localStorage.getItem(CHAT_LAYOUT_KEY)==='split'?'split':'single';
+  }catch(_){
+    return 'single';
+  }
+}
+
+function syncChatLayoutButton(){
+  const btn=$('btnChatLayout');
+  if(!btn)return;
+  const split=document.documentElement.dataset.chatLayout==='split';
+  btn.classList.toggle('active',split);
+  btn.setAttribute('aria-pressed',split?'true':'false');
+  btn.title=split?'Single-column chat':'Two-column chat';
+  btn.setAttribute('aria-label',btn.title);
+}
+
+function setChatLayout(mode, persist=true){
+  const split=mode==='split';
+  if(split) document.documentElement.dataset.chatLayout='split';
+  else delete document.documentElement.dataset.chatLayout;
+  if(persist){
+    try{localStorage.setItem(CHAT_LAYOUT_KEY,split?'split':'single');}catch(_){}
+  }
+  syncChatLayoutButton();
+}
+
+function toggleChatLayout(){
+  const split=document.documentElement.dataset.chatLayout==='split';
+  setChatLayout(split?'single':'split');
+}
+
+function initChatLayout(){
+  setChatLayout(_readChatLayoutPreference(), false);
+}
+
 $('btnSend').onclick=()=>{
   if(typeof handleComposerPrimaryAction==='function') return handleComposerPrimaryAction();
   if(window._micActive){
@@ -1401,6 +1441,7 @@ function applyBotName(){
 }
 
 (async()=>{
+  initChatLayout();
   // Load send key preference
   let _bootSettings={};
   try{

@@ -5051,6 +5051,7 @@ let _settingsThemeOnOpen = null; // track theme at open time for discard revert
 let _settingsSkinOnOpen = null; // track skin at open time for discard revert
 let _settingsFontSizeOnOpen = null; // track font size at open time for discard revert
 let _settingsHermesDefaultModelOnOpen = '';
+let _settingsPromptCacheOnOpen = false;
 let _settingsSection = 'conversation';
 let _currentSettingsSection = 'conversation';
 let _settingsAppearanceAutosaveTimer = null;
@@ -5522,6 +5523,20 @@ async function loadSettingsPanel(){
     if(simplifiedToolCb){simplifiedToolCb.checked=settings.simplified_tool_calling!==false;simplifiedToolCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     const apiRedactCb=$('settingsApiRedact');
     if(apiRedactCb){apiRedactCb.checked=settings.api_redact_enabled!==false;apiRedactCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
+    const autoTitlesCb=$('settingsAutoGenerateTitles');
+    if(autoTitlesCb){autoTitlesCb.checked=settings.auto_generate_titles!==false;autoTitlesCb.addEventListener('change',_markSettingsDirty,{once:false});}
+    const promptCacheCb=$('settingsPromptCacheEnabled');
+    if(promptCacheCb){
+      try{
+        const pc=await api('/api/prompt-cache');
+        _settingsPromptCacheOnOpen=!!pc.enabled;
+        promptCacheCb.checked=_settingsPromptCacheOnOpen;
+      }catch(e){
+        _settingsPromptCacheOnOpen=false;
+        promptCacheCb.checked=false;
+      }
+      promptCacheCb.addEventListener('change',_markSettingsDirty,{once:false});
+    }
     const showCliCb=$('settingsShowCliSessions');
     if(showCliCb){showCliCb.checked=!!settings.show_cli_sessions;showCliCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     const syncCb=$('settingsSyncInsights');
@@ -6376,6 +6391,8 @@ async function checkUpdatesNow(){
 async function saveSettings(andClose){
   const model=($('settingsModel')||{}).value;
   const modelChanged=(model||'')!==(_settingsHermesDefaultModelOnOpen||'');
+  const promptCache=!!($('settingsPromptCacheEnabled')||{}).checked;
+  const promptCacheChanged=promptCache!==_settingsPromptCacheOnOpen;
   const sendKey=($('settingsSendKey')||{}).value;
   const showTokenUsage=!!($('settingsShowTokenUsage')||{}).checked;
   const showQuotaChip=!!($('settingsShowQuotaChip')||{}).checked;
@@ -6412,6 +6429,7 @@ async function saveSettings(andClose){
   body.rtl=!!($('settingsRtl')||{}).checked;
   body.notifications_enabled=!!($('settingsNotificationsEnabled')||{}).checked;
   body.show_thinking=window._showThinking!==false;
+  body.auto_generate_titles=!!($('settingsAutoGenerateTitles')||{}).checked;
   body.sidebar_density=sidebarDensity;
   body.busy_input_mode=busyInputMode;
   body.auto_title_refresh_every=(($('settingsAutoTitleRefresh')||{}).value||'0');
@@ -6421,6 +6439,14 @@ async function saveSettings(andClose){
   if(pw && pw.trim()){
     try{
       const saved=await api('/api/settings',{method:'POST',body:JSON.stringify({...body,_set_password:pw.trim()})});
+      if(promptCacheChanged){
+        try{
+          await api('/api/prompt-cache',{method:'POST',body:JSON.stringify({enabled:promptCache})});
+          _settingsPromptCacheOnOpen=promptCache;
+        }catch(_pcErr){
+          if(typeof showToast==='function') showToast('Failed to update prompt cache mode — settings saved');
+        }
+      }
       if(modelChanged && model){
         try{
           await api('/api/default-model',{method:'POST',body:JSON.stringify({model})});
@@ -6440,6 +6466,14 @@ async function saveSettings(andClose){
   }
   try{
     const saved=await api('/api/settings',{method:'POST',body:JSON.stringify(body)});
+    if(promptCacheChanged){
+      try{
+        await api('/api/prompt-cache',{method:'POST',body:JSON.stringify({enabled:promptCache})});
+        _settingsPromptCacheOnOpen=promptCache;
+      }catch(_pcErr){
+        if(typeof showToast==='function') showToast('Failed to update prompt cache mode — settings saved');
+      }
+    }
     if(modelChanged && model){
       try{
         await api('/api/default-model',{method:'POST',body:JSON.stringify({model})});
