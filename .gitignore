@@ -19,6 +19,7 @@ archive/
 .claude/
 CLAUDE.md
 AGENTS.md
+!AGENTS.md
 .cursorrules
 .windsurfrules
 .aider*
