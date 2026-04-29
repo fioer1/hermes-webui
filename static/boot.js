@@ -176,6 +176,46 @@ function mobileSwitchPanel(name){
   }
 }
 
+// ── Chat layout preference ─────────────────────────────────────────────────
+const CHAT_LAYOUT_KEY='hermes-webui-chat-layout';
+
+function _readChatLayoutPreference(){
+  try{
+    return localStorage.getItem(CHAT_LAYOUT_KEY)==='split'?'split':'single';
+  }catch(_){
+    return 'single';
+  }
+}
+
+function syncChatLayoutButton(){
+  const btn=$('btnChatLayout');
+  if(!btn)return;
+  const split=document.documentElement.dataset.chatLayout==='split';
+  btn.classList.toggle('active',split);
+  btn.setAttribute('aria-pressed',split?'true':'false');
+  btn.title=split?'Single-column chat':'Two-column chat';
+  btn.setAttribute('aria-label',btn.title);
+}
+
+function setChatLayout(mode, persist=true){
+  const split=mode==='split';
+  if(split) document.documentElement.dataset.chatLayout='split';
+  else delete document.documentElement.dataset.chatLayout;
+  if(persist){
+    try{localStorage.setItem(CHAT_LAYOUT_KEY,split?'split':'single');}catch(_){}
+  }
+  syncChatLayoutButton();
+}
+
+function toggleChatLayout(){
+  const split=document.documentElement.dataset.chatLayout==='split';
+  setChatLayout(split?'single':'split');
+}
+
+function initChatLayout(){
+  setChatLayout(_readChatLayoutPreference(), false);
+}
+
 $('btnSend').onclick=()=>{
   if(window._micActive){
     window._micPendingSend=true;
@@ -802,6 +842,7 @@ function applyBotName(){
 }
 
 (async()=>{
+  initChatLayout();
   // Load send key preference
   let _bootSettings={};
   try{
@@ -865,20 +906,30 @@ function applyBotName(){
   // Update profile chip label immediately
   const profileLabel=$('profileChipLabel');
   if(profileLabel) profileLabel.textContent=S.activeProfile||'default';
-  // Fetch available models without blocking session restore. The static HTML
-  // options are enough for first paint; the dynamic provider list can settle
-  // after the saved session is visible.
-  const _modelDropdownReady=populateModelDropdown().then(()=>{
-    const savedModel=localStorage.getItem('hermes-webui-model');
-    if(savedModel && $('modelSelect')){
-      $('modelSelect').value=savedModel;
-      // If the value didn't take (model not in list), clear the bad pref
-      if($('modelSelect').value!==savedModel) localStorage.removeItem('hermes-webui-model');
-      else if(typeof syncModelChip==='function') syncModelChip();
-    }
+  // Restore last-used model preference
+  const savedModel=localStorage.getItem('hermes-webui-model');
+  const applySavedModelPreference=removeBadPref=>{
+    if(!savedModel || !$('modelSelect')) return;
+    $('modelSelect').value=savedModel;
+    // Before /api/models resolves the option may not exist yet; only clear
+    // the pref after the dynamic dropdown has had a chance to populate.
+    if($('modelSelect').value!==savedModel){
+      if(removeBadPref) localStorage.removeItem('hermes-webui-model');
+    }else if(typeof syncModelChip==='function') syncModelChip();
+  };
+  // Fetch available models in the background. A slow provider/auth scan should
+  // not delay restoring the last session or showing the chat window.
+  const modelDropdownReady=populateModelDropdown().then(()=>{
+    applySavedModelPreference(true);
     if(S.session) syncTopbar();
   }).catch(()=>{});
+  if(savedModel && $('modelSelect')){
+    applySavedModelPreference(false);
+  }
+  // Legacy alias marker: const _modelDropdownReady=populateModelDropdown().then
+  const _modelDropdownReady=modelDropdownReady;
   window._modelDropdownReady=_modelDropdownReady;
+  void modelDropdownReady;
   // Pre-load workspace list so sidebar name is correct from first render
   await loadWorkspaceList();
   await loadOnboardingWizard();

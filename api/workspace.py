@@ -10,11 +10,15 @@ paths are used as fallback when no profile module is available.
 import json
 import logging
 import os
+import re
 import subprocess
-import concurrent.futures
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_git_info_cache: dict[str, tuple[float, dict | None]] = {}
+_GIT_INFO_CACHE_TTL = 10.0
 
 from api.config import (
     WORKSPACES_FILE as _GLOBAL_WS_FILE,
@@ -708,49 +712,60 @@ def _run_git(args, cwd, timeout=3):
     try:
         r = subprocess.run(
             ['git'] + args, cwd=str(cwd), capture_output=True,
-            text=True, timeout=timeout,
+            text=True, encoding='utf-8', errors='replace', timeout=timeout,
         )
         return r.stdout.strip() if r.returncode == 0 else None
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
 
 
+def _parse_git_status(status_out: str) -> dict | None:
+    lines = [line for line in (status_out or '').splitlines() if line]
+    if not lines or not lines[0].startswith('## '):
+        return None
+
+    branch_line = lines[0][3:]
+    branch_part = branch_line.split(' ', 1)[0]
+    branch = branch_part.split('...', 1)[0] if '...' in branch_part else branch_part
+    if branch == 'HEAD':
+        branch = 'detached'
+
+    ahead_match = re.search(r'\bahead (\d+)', branch_line)
+    behind_match = re.search(r'\bbehind (\d+)', branch_line)
+    change_lines = lines[1:]
+    modified = sum(
+        1 for line in change_lines
+        if len(line) >= 2 and (line[0] in 'MARCD' or line[1] in 'MARCD')
+    )
+    untracked = sum(1 for line in change_lines if line.startswith('??'))
+
+    return {
+        'branch': branch,
+        'dirty': len(change_lines),
+        'modified': modified,
+        'untracked': untracked,
+        'ahead': int(ahead_match.group(1)) if ahead_match else 0,
+        'behind': int(behind_match.group(1)) if behind_match else 0,
+        'is_git': True,
+    }
+
+
 def git_info_for_workspace(workspace: Path) -> dict:
     """Return git info for a workspace directory, or None if not a git repo."""
     if not (workspace / '.git').exists():
         return None
-    branch = _run_git(['rev-parse', '--abbrev-ref', 'HEAD'], workspace)
-    if branch is None:
-        return None
-    # Run the remaining git commands in parallel via threads — they are
-    # independent subprocess calls and together can take 50-200ms when run
-    # serially.  Threading is safe here because each call blocks only on the
-    # subprocess pipe, not on the GIL.
-    def _ahead():
-        r = _run_git(['rev-list', '--count', '@{u}..HEAD'], workspace)
-        return int(r) if r and r.isdigit() else 0
-    def _behind():
-        r = _run_git(['rev-list', '--count', 'HEAD..@{u}'], workspace)
-        return int(r) if r and r.isdigit() else 0
-    def _status():
-        out = _run_git(['status', '--porcelain'], workspace) or ''
-        lines = [l for l in out.splitlines() if l]
-        modified = sum(1 for l in lines if len(l) >= 2 and (l[0] in 'MAR' or l[1] in 'MAR'))
-        untracked = sum(1 for l in lines if l.startswith('??'))
-        return len(lines), modified, untracked
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        f_status = pool.submit(_status)
-        f_ahead  = pool.submit(_ahead)
-        f_behind = pool.submit(_behind)
-        dirty, modified, untracked = f_status.result()
-        ahead  = f_ahead.result()
-        behind = f_behind.result()
-    return {
-        'branch': branch,
-        'dirty': dirty,
-        'modified': modified,
-        'untracked': untracked,
-        'ahead': ahead,
-        'behind': behind,
-        'is_git': True,
-    }
+
+    key = str(workspace.resolve())
+    now = time.monotonic()
+    cached = _git_info_cache.get(key)
+    if cached and (now - cached[0]) < _GIT_INFO_CACHE_TTL:
+        return dict(cached[1]) if cached[1] is not None else None
+
+    status_out = _run_git(
+        ['status', '--short', '--branch', '--untracked-files=no'],
+        workspace,
+        timeout=2,
+    )
+    info = _parse_git_status(status_out or '')
+    _git_info_cache[key] = (now, dict(info) if info is not None else None)
+    return info

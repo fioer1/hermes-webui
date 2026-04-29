@@ -730,6 +730,7 @@
   .icon-btn{width:34px;height:34px;border-radius:8px;background:none;border:none;color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;transition:all .15s;}
   .icon-btn{opacity:.75;}
   .icon-btn:hover{background:rgba(255,255,255,.08);color:var(--text);opacity:1;}
+  .chat-layout-btn.active{color:var(--accent-text);background:var(--accent-bg);opacity:1;}
   .mic-btn{transition:color .15s,background .15s;}
   .mic-btn.recording{color:var(--error);background:rgba(239,83,80,.12);animation:mic-pulse 1.2s ease-in-out infinite;}
   @keyframes mic-pulse{0%,100%{box-shadow:0 0 0 0 rgba(239,83,80,.3);}50%{box-shadow:0 0 0 6px rgba(239,83,80,0);}}
@@ -2210,6 +2211,51 @@ main.main.showing-profiles > #mainProfiles{display:flex;}
 .messages-inner { max-width: var(--msg-max); }
 @media (min-width: 1400px) { .messages-inner { max-width: calc(var(--msg-max) + 40px); } }
 @media (min-width: 1800px) { .messages-inner { max-width: calc(var(--msg-max) + 80px); } }
+
+/* ── Wide chat split: response on the left, prompt on the right ── */
+@media (min-width: 1500px) {
+  :root[data-chat-layout="split"] .messages-inner {
+    --msg-max: 100%;
+    width: 100%;
+    max-width: min(1760px, calc(100% - 24px));
+    display: grid;
+    grid-template-columns: minmax(0, 1.42fr) minmax(240px, .58fr);
+    grid-auto-flow: row dense;
+    column-gap: 32px;
+    row-gap: 6px;
+    align-items: start;
+  }
+  :root[data-chat-layout="split"] .messages-inner > .msg-row,
+  :root[data-chat-layout="split"] .messages-inner > .assistant-turn {
+    min-width: 0;
+  }
+  :root[data-chat-layout="split"] .messages-inner > .msg-row[data-role="user"] {
+    grid-column: 2;
+    justify-self: stretch;
+    max-width: 100%;
+    align-self: start;
+  }
+  :root[data-chat-layout="split"] .messages-inner > .msg-row[data-role="assistant"],
+  :root[data-chat-layout="split"] .messages-inner > .assistant-turn {
+    grid-column: 1;
+  }
+  :root[data-chat-layout="split"] .messages-inner > .msg-date-sep,
+  :root[data-chat-layout="split"] .messages-inner > .msg-row[data-editing="1"],
+  :root[data-chat-layout="split"] .messages-inner > .msg-row-btw {
+    grid-column: 1 / -1;
+  }
+  :root[data-chat-layout="split"] .msg-row[data-role="user"] .msg-body {
+    max-width: none;
+  }
+  :root[data-chat-layout="split"] .assistant-turn .msg-body,
+  :root[data-chat-layout="split"] .msg-row[data-role="assistant"] .msg-body,
+  :root[data-chat-layout="split"] .assistant-turn .msg-foot,
+  :root[data-chat-layout="split"] .msg-row[data-role="assistant"] .msg-foot,
+  :root[data-chat-layout="split"] .assistant-turn .tool-card,
+  :root[data-chat-layout="split"] .assistant-turn .thinking-card {
+    max-width: 100%;
+  }
+}
 
 @media (max-width: 700px) {
   .msg-role { margin-bottom: 4px; }

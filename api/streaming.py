@@ -23,6 +23,7 @@ from api.config import (
     _get_session_agent_lock, _set_thread_env, _clear_thread_env,
     SESSION_AGENT_LOCKS, SESSION_AGENT_LOCKS_LOCK,
     resolve_model_provider,
+    load_settings,
 )
 from api.helpers import redact_session_data
 from api.metering import meter
@@ -1871,7 +1872,13 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
                 _looks_default = (s.title == 'Untitled' or s.title == 'New Chat' or not s.title)
                 _looks_provisional = _is_provisional_title(s.title, s.messages)
                 _invalid_existing_title = _looks_invalid_generated_title(s.title)
+                try:
+                    _auto_generate_titles = load_settings().get('auto_generate_titles', True) is not False
+                except Exception:
+                    _auto_generate_titles = True
                 _should_bg_title = (
+                    _auto_generate_titles
+                    and
                     (_looks_default or _looks_provisional or _invalid_existing_title)
                     and (not getattr(s, 'llm_title_generated', False) or _invalid_existing_title)
                 )

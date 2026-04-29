@@ -1029,6 +1029,43 @@ def set_reasoning_effort(effort: str) -> dict:
     return get_reasoning_status()
 
 
+def get_prompt_cache_status() -> dict:
+    """Return whether the active profile is pinned to chat completions.
+
+    Hermes can still auto-detect API modes when this key is absent. This UI
+    toggle is intentionally explicit: enabled means ``model.api_mode`` is set
+    to ``chat_completions`` so OpenAI-compatible providers can use their
+    automatic prompt cache; disabled means ``codex_responses``.
+    """
+    config_data = _load_yaml_config_file(_get_config_path())
+    model_cfg = config_data.get("model") or {}
+    api_mode = ""
+    if isinstance(model_cfg, dict):
+        api_mode = str(model_cfg.get("api_mode") or "").strip()
+    return {
+        "enabled": api_mode == "chat_completions",
+        "api_mode": api_mode,
+    }
+
+
+def set_prompt_cache_enabled(enabled: bool) -> dict:
+    """Persist the prompt-cache transport preference to config.yaml."""
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled must be a boolean")
+
+    config_path = _get_config_path()
+    with _cfg_lock:
+        config_data = _load_yaml_config_file(config_path)
+        model_cfg = config_data.get("model")
+        if not isinstance(model_cfg, dict):
+            model_cfg = {}
+        model_cfg["api_mode"] = "chat_completions" if enabled else "codex_responses"
+        config_data["model"] = model_cfg
+        _save_yaml_config_file(config_path, config_data)
+    reload_config()
+    return get_prompt_cache_status()
+
+
 def set_hermes_default_model(model_id: str) -> dict:
     """Persist the Hermes default model in config.yaml and reload runtime config."""
     selected_model = str(model_id or "").strip()
@@ -1905,6 +1942,7 @@ _SETTINGS_DEFAULTS = {
     "sound_enabled": False,  # play notification sound when assistant finishes
     "notifications_enabled": False,  # browser notification when tab is in background
     "show_thinking": True,  # show/hide thinking/reasoning blocks in chat view
+    "auto_generate_titles": True,  # generate LLM session titles after first exchange
     "sidebar_density": "compact",  # compact | detailed
     "auto_title_refresh_every": "0",  # adaptive title refresh: 0=off, 5/10/20=every N exchanges
     "busy_input_mode": "queue",  # behavior when sending while agent is running: queue | interrupt | steer
@@ -2020,6 +2058,7 @@ _SETTINGS_BOOL_KEYS = {
     "sound_enabled",
     "notifications_enabled",
     "show_thinking",
+    "auto_generate_titles",
 }
 # Language codes are validated as short alphanumeric BCP-47-like tags (e.g. 'en', 'zh', 'fr')
 _SETTINGS_LANG_RE = __import__("re").compile(r"^[a-zA-Z]{2,10}(-[a-zA-Z0-9]{2,8})?$")

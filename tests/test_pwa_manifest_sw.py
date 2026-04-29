@@ -116,7 +116,7 @@ class TestPWARoutes:
         src = ROUTES.read_text(encoding="utf-8")
         idx = src.find('"/sw.js"')
         assert idx != -1, "routes.py must handle /sw.js"
-        block = src[idx:idx + 1000]
+        block = src[idx:idx + 2200]
         assert "__CACHE_VERSION__" in block, (
             "sw.js route must replace __CACHE_VERSION__ with the current WEBUI_VERSION"
         )
@@ -124,10 +124,19 @@ class TestPWARoutes:
             "sw.js route must import and use WEBUI_VERSION for cache busting"
         )
 
+    def test_sw_route_includes_shell_asset_mtime_in_cache_version(self):
+        src = ROUTES.read_text(encoding="utf-8")
+        idx = src.find('"/sw.js"')
+        block = src[idx:idx + 2200]
+        assert "st_mtime_ns" in block and "shell_stamp" in block, (
+            "/sw.js cache version must include shell asset mtimes so local dirty "
+            "static edits refresh the service-worker cache before a git commit"
+        )
+
     def test_sw_route_sets_service_worker_allowed(self):
         src = ROUTES.read_text(encoding="utf-8")
         idx = src.find('"/sw.js"')
-        block = src[idx:idx + 1000]
+        block = src[idx:idx + 2200]
         assert "Service-Worker-Allowed" in block, (
             "sw.js route must set Service-Worker-Allowed header so the SW can control "
             "the expected scope"

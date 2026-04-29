@@ -11,7 +11,7 @@ Skips repos that are not git checkouts (e.g. Docker baked images where
 import subprocess
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from api.config import REPO_ROOT
 
@@ -28,6 +28,25 @@ _apply_lock = threading.Lock()   # prevents concurrent stash/pull/pop on same re
 CACHE_TTL = 1800  # 30 minutes
 
 
+def _clean_subprocess_output(value):
+    """Return subprocess output as stripped text, tolerating failed readers."""
+    if value is None:
+        return ''
+    if isinstance(value, bytes):
+        return value.decode('utf-8', errors='replace').strip()
+    return str(value).strip()
+
+
+def _build_restart_argv(executable, argv):
+    """Build argv for os.execv without a space-containing argv0."""
+    executable = str(executable)
+    if '\\' in executable or (len(executable) > 1 and executable[1] == ':'):
+        argv0 = PureWindowsPath(executable).name
+    else:
+        argv0 = Path(executable).name
+    return [argv0 or executable] + list(argv)
+
+
 def _run_git(args, cwd, timeout=10):
     """Run a git command and return (useful output, ok).
 
@@ -37,15 +56,18 @@ def _run_git(args, cwd, timeout=10):
     try:
         r = subprocess.run(
             ['git'] + args, cwd=str(cwd), capture_output=True,
-            text=True, timeout=timeout,
+            text=True, encoding='utf-8', errors='replace', timeout=timeout,
         )
-        stdout = r.stdout.strip()
-        stderr = r.stderr.strip()
+        stdout = _clean_subprocess_output(r.stdout)
+        stderr = _clean_subprocess_output(r.stderr)
         if r.returncode == 0:
             return stdout, True
         return stderr or stdout or f"git exited with status {r.returncode}", False
     except subprocess.TimeoutExpired as exc:
-        detail = (getattr(exc, 'stderr', None) or getattr(exc, 'stdout', None) or '').strip()
+        detail = (
+            _clean_subprocess_output(getattr(exc, 'stderr', None))
+            or _clean_subprocess_output(getattr(exc, 'stdout', None))
+        )
         return detail or f"git {' '.join(args)} timed out after {timeout}s", False
     except FileNotFoundError:
         return 'git executable not found', False
@@ -219,7 +241,7 @@ def _schedule_restart(delay: float = 2.0) -> None:
         # released atomically by the kernel.
         with _apply_lock:
             try:
-                os.execv(sys.executable, [sys.executable] + sys.argv)
+                os.execv(sys.executable, _build_restart_argv(sys.executable, sys.argv))
             except Exception:
                 # Last-resort: if execv fails (e.g. frozen binary), just exit
                 # so the process supervisor (start.sh / Docker) restarts us.
