@@ -777,13 +777,11 @@ def _parse_git_status(status_out: str) -> dict | None:
     lines = [line for line in (status_out or '').splitlines() if line]
     if not lines or not lines[0].startswith('## '):
         return None
-
     branch_line = lines[0][3:]
     branch_part = branch_line.split(' ', 1)[0]
     branch = branch_part.split('...', 1)[0] if '...' in branch_part else branch_part
     if branch == 'HEAD':
         branch = 'detached'
-
     ahead_match = re.search(r'\bahead (\d+)', branch_line)
     behind_match = re.search(r'\bbehind (\d+)', branch_line)
     change_lines = lines[1:]
@@ -792,7 +790,6 @@ def _parse_git_status(status_out: str) -> dict | None:
         if len(line) >= 2 and (line[0] in 'MARCD' or line[1] in 'MARCD')
     )
     untracked = sum(1 for line in change_lines if line.startswith('??'))
-
     return {
         'branch': branch,
         'dirty': len(change_lines),
@@ -808,13 +805,11 @@ def git_info_for_workspace(workspace: Path) -> dict:
     """Return git info for a workspace directory, or None if not a git repo."""
     if not (workspace / '.git').exists():
         return None
-
     key = str(workspace.resolve())
     now = time.monotonic()
     cached = _git_info_cache.get(key)
     if cached and (now - cached[0]) < _GIT_INFO_CACHE_TTL:
         return dict(cached[1]) if cached[1] is not None else None
-
     status_out = _run_git(
         ['status', '--short', '--branch', '--untracked-files=no'],
         workspace,

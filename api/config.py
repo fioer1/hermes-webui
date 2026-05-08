@@ -4309,10 +4309,10 @@ _SETTINGS_BOOL_KEYS = {
     "notifications_enabled",
     "show_thinking",
     "simplified_tool_calling",
+    "auto_generate_titles",
     "api_redact_enabled",
     "session_jump_buttons",
     "session_endless_scroll",
-    "auto_generate_titles",
 }
 # Language codes are validated as short alphanumeric BCP-47-like tags (e.g. 'en', 'zh', 'fr')
 _SETTINGS_LANG_RE = __import__("re").compile(r"^[a-zA-Z]{2,10}(-[a-zA-Z0-9]{2,8})?$")

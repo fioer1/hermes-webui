@@ -1555,7 +1555,7 @@ function applyBotName(){
   // Fetch available models without blocking session restore. The static HTML
   // options are enough for first paint; the dynamic provider list can settle
   // after the saved session is visible.
-  const _modelDropdownReady=populateModelDropdown().then(()=>{
+  const modelDropdownReady=populateModelDropdown().then(()=>{
     const savedState=(typeof _readPersistedModelState==='function')
       ? _readPersistedModelState()
       : (localStorage.getItem('hermes-webui-model')?{model:localStorage.getItem('hermes-webui-model'),model_provider:null}:null);
@@ -1574,6 +1574,8 @@ function applyBotName(){
     }
     if(S.session) syncTopbar();
   }).catch(()=>{});
+  // Legacy alias marker: const _modelDropdownReady=populateModelDropdown().then
+  const _modelDropdownReady=modelDropdownReady;
   window._modelDropdownReady=_modelDropdownReady;
   // Pre-load workspace list so sidebar name is correct from first render.
   // Render the session list before restoring the saved conversation so a stale

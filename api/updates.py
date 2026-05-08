@@ -35,6 +35,23 @@ _apply_lock = threading.Lock()   # prevents concurrent stash/pull/pop on same re
 CACHE_TTL = 1800  # 30 minutes
 
 
+def _clean_subprocess_output(value):
+    if value is None:
+        return ''
+    if isinstance(value, bytes):
+        return value.decode('utf-8', errors='replace').strip()
+    return str(value).strip()
+
+
+def _build_restart_argv(executable, argv):
+    executable = str(executable)
+    if '\\' in executable or (len(executable) > 1 and executable[1] == ':'):
+        argv0 = PureWindowsPath(executable).name
+    else:
+        argv0 = Path(executable).name
+    return [argv0 or executable] + list(argv)
+
+
 def _active_stream_count() -> int:
     """Return the current in-memory chat stream count.
 
