@@ -56,6 +56,21 @@ PROJECTS_FILE = STATE_DIR / "projects.json"
 logger = logging.getLogger(__name__)
 
 
+def _is_windows_store_python_shim(path: str | os.PathLike | None) -> bool:
+    """Return True for the Microsoft Store python/python3 app execution alias."""
+    if not path:
+        return False
+    try:
+        value = str(path).lower().replace("/", "\\")
+    except Exception:
+        return False
+    return "\\microsoft\\windowsapps\\python" in value or "\\windowsapps\\python" in value
+
+
+def _remote_api_configured() -> bool:
+    return bool(os.getenv("HERMES_WEBUI_REMOTE_API_BASE_URL", "").strip())
+
+
 def _env_mb_bytes(name: str, default_mb: int) -> int:
     """Parse an optional megabyte environment variable into bytes.
 
@@ -174,16 +189,19 @@ def _discover_python(agent_dir: Path) -> str:
     local_venv = REPO_ROOT / ".venv" / "bin" / "python"
     if local_venv.exists():
         return str(local_venv)
+    local_venv_win = REPO_ROOT / ".venv" / "Scripts" / "python.exe"
+    if local_venv_win.exists():
+        return str(local_venv_win)
 
     # Fall back to system python3
     import shutil
 
     for name in ("python3", "python"):
         found = shutil.which(name)
-        if found:
+        if found and not _is_windows_store_python_shim(found):
             return found
 
-    return "python3"
+    return sys.executable if not _is_windows_store_python_shim(sys.executable) else "python"
 
 
 # Run discovery
@@ -470,7 +488,7 @@ def print_startup_config() -> None:
         "  Hermes Web UI -- startup config",
         "  --------------------------------",
         f"  repo root   : {REPO_ROOT}",
-        f"  agent dir   : {_AGENT_DIR if _AGENT_DIR else 'NOT FOUND'}  {ok if _AGENT_DIR else err}",
+        f"  agent dir   : {_AGENT_DIR if _AGENT_DIR else ('REMOTE API' if _remote_api_configured() else 'NOT FOUND')}  {ok if (_AGENT_DIR or _remote_api_configured()) else err}",
         f"  python      : {PYTHON_EXE}",
         f"  state dir   : {STATE_DIR}",
         f"  workspace   : {DEFAULT_WORKSPACE}",
@@ -480,7 +498,13 @@ def print_startup_config() -> None:
     ]
     print("\n".join(lines), flush=True)
 
-    if not _HERMES_FOUND:
+    if not _HERMES_FOUND and _remote_api_configured():
+        print(
+            f"{warn}  Local Hermes agent checkout not found; using remote API backend.\n"
+            "      Local tool execution and direct agent internals are unavailable in this mode.\n",
+            flush=True,
+        )
+    elif not _HERMES_FOUND:
         print(
             f"{err}  Could not find the Hermes agent directory.\n"
             "      The server will start but agent features will not work.\n"

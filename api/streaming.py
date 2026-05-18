@@ -10,9 +10,12 @@ import mimetypes
 import os
 import queue
 import re
+import ssl
 import threading
 import time
 import traceback
+import urllib.error
+import urllib.request
 import copy
 from pathlib import Path
 from typing import Optional
@@ -96,6 +99,130 @@ def _get_ai_agent():
         except ImportError:
             pass
     return AIAgent
+
+
+def _remote_api_backend_config() -> dict:
+    base_url = os.getenv("HERMES_WEBUI_REMOTE_API_BASE_URL", "").strip().rstrip("/")
+    if not base_url:
+        return {}
+    return {
+        "base_url": base_url,
+        "api_key": os.getenv("HERMES_WEBUI_REMOTE_API_KEY", "").strip(),
+        "model": os.getenv("HERMES_WEBUI_REMOTE_API_MODEL", "").strip() or os.getenv("HERMES_WEBUI_DEFAULT_MODEL", "").strip() or "hermes-agent",
+    }
+
+
+def _remote_api_is_configured() -> bool:
+    return bool(_remote_api_backend_config().get("base_url"))
+
+
+def _message_text_content(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return str(content or "")
+
+
+def _remote_chat_messages(history, user_message, system_message: str = "") -> list[dict]:
+    messages: list[dict] = []
+    if system_message:
+        messages.append({"role": "system", "content": str(system_message)})
+    for msg in history or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role not in ("user", "assistant", "system"):
+            continue
+        text = _message_text_content(msg.get("content"))
+        if text:
+            messages.append({"role": role, "content": text})
+    user_text = _message_text_content(user_message)
+    if user_text:
+        messages.append({"role": "user", "content": user_text})
+    return messages
+
+
+def _remote_stream_chat_completion(
+    *,
+    messages,
+    model,
+    cancel_event,
+    on_token,
+    timeout=300,
+) -> tuple[str, dict]:
+    cfg = _remote_api_backend_config()
+    if not cfg:
+        raise RuntimeError("Remote API backend is not configured")
+    endpoint = cfg["base_url"].rstrip("/") + "/chat/completions"
+    payload = {
+        "model": model or cfg["model"],
+        "messages": messages,
+        "stream": True,
+    }
+    body = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    if cfg.get("api_key"):
+        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+    request = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+    collected: list[str] = []
+    usage: dict = {}
+    urlopen_kwargs = {"timeout": timeout}
+    if endpoint.lower().startswith("https://"):
+        urlopen_kwargs["context"] = ssl.create_default_context()
+    try:
+        with urllib.request.urlopen(request, **urlopen_kwargs) as response:  # nosec B310
+            for raw in response:
+                if cancel_event.is_set():
+                    break
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line or line.startswith(":"):
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(chunk.get("usage"), dict):
+                    usage = chunk["usage"]
+                for choice in chunk.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    text = delta.get("content")
+                    if text:
+                        text = str(text)
+                        collected.append(text)
+                        on_token(text)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:1200]
+        raise RuntimeError(f"Remote API HTTP {exc.code}: {detail}") from exc
+    return "".join(collected), usage
+
+
+def _remote_usage_value(usage: dict, *names: str) -> int:
+    if not isinstance(usage, dict):
+        return 0
+    for name in names:
+        value = usage.get(name)
+        if value is None:
+            continue
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return 0
 
 
 def _is_quota_error_text(err_text: str) -> bool:
@@ -3431,9 +3558,146 @@ def _run_agent_streaming(
                 except Exception:
                     logger.debug('Failed to update live prompt estimate on tool completion', exc_info=True)
 
+            # Shared turn context is needed by both the local AIAgent path and
+            # the remote OpenAI-compatible fallback.
+            from api.config import get_config as _get_config
+            _cfg = _get_config()
+            resolved_model, resolved_provider, resolved_base_url = resolve_model_provider(
+                model_with_provider_context(model, provider_context)
+            )
+            workspace_ctx = _workspace_context_prefix(str(s.workspace))
+            workspace_system_msg = (
+                f"Active workspace at session start: {s.workspace}\n"
+                "Every user message is prefixed with [Workspace::v1: /absolute/path] indicating the "
+                "workspace the user has selected in the web UI at the time they sent that message. "
+                "This tag is the single authoritative source of the active workspace and updates "
+                "with every message. It overrides any prior workspace mentioned in this system "
+                "prompt, memory, or conversation history. Always use the value from the most recent "
+                "[Workspace::v1: ...] tag as your default working directory for ALL file operations: "
+                "write_file, read_file, search_files, terminal workdir, and patch. "
+                "Never fall back to a hardcoded path when this tag is present."
+            )
+            _pending_started_at = getattr(s, 'pending_started_at', None)
+            _turn_started_at = _pending_started_at if _pending_started_at else time.time()
+            _previous_messages = list(s.messages or [])
+            _previous_context_messages = _context_messages_for_new_turn(s, msg_text)
+
             _AIAgent = _get_ai_agent()
             if _AIAgent is None:
-                raise ImportError(_aiagent_import_error_detail())
+                if not _remote_api_is_configured():
+                    raise ImportError(_aiagent_import_error_detail())
+                _self_healed = True  # remote backend auth errors cannot use local Hermes self-heal
+                _process_notifications = _drain_webui_process_notifications(session_id)
+                _agent_msg_text = msg_text
+                if _process_notifications:
+                    _agent_msg_text = "\n\n".join([*_process_notifications, msg_text]).strip()
+                user_message = _build_native_multimodal_message(
+                    workspace_ctx,
+                    _agent_msg_text,
+                    attachments,
+                    workspace,
+                    cfg=_cfg,
+                )
+                _history = _sanitize_messages_for_api(_previous_context_messages, cfg=_cfg)
+                with _agent_lock:
+                    s.save(touch_updated_at=True, skip_index=False)
+                _remote_answer, _remote_usage = _remote_stream_chat_completion(
+                    messages=_remote_chat_messages(_history, user_message, workspace_system_msg),
+                    model=(resolved_model or model or _remote_api_backend_config().get("model")),
+                    cancel_event=cancel_event,
+                    on_token=on_token,
+                )
+                if cancel_event.is_set():
+                    with _agent_lock:
+                        _finalize_cancelled_turn(s, ephemeral=ephemeral)
+                    put('cancel', {'message': 'Cancelled by user'})
+                    return
+
+                input_tokens = _remote_usage_value(_remote_usage, "prompt_tokens", "input_tokens")
+                output_tokens = _remote_usage_value(_remote_usage, "completion_tokens", "output_tokens")
+                _turn_duration_seconds = max(0.0, time.time() - float(_turn_started_at))
+                _turn_tps = round(float(output_tokens) / _turn_duration_seconds, 1) if output_tokens and _turn_duration_seconds > 0 else None
+                usage = {
+                    'input_tokens': input_tokens,
+                    'output_tokens': output_tokens,
+                    'duration_seconds': round(_turn_duration_seconds, 3),
+                    'backend': 'remote_api',
+                }
+                if _turn_tps is not None:
+                    usage['tps'] = _turn_tps
+                if ephemeral:
+                    _ephemeral_messages = [
+                        *_previous_messages,
+                        {'role': 'user', 'content': msg_text, 'timestamp': int(time.time())},
+                        {'role': 'assistant', 'content': _remote_answer, 'timestamp': int(time.time())},
+                    ]
+                    put('done', {
+                        'session': {'session_id': session_id, 'messages': _ephemeral_messages},
+                        'usage': usage,
+                        'ephemeral': True,
+                        'answer': _remote_answer,
+                    })
+                    try:
+                        Path(s.path).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    return
+
+                with _agent_lock:
+                    if not _stream_writeback_is_current(s, stream_id):
+                        logger.info(
+                            "Skipping stale remote stream writeback for session %s stream %s; active_stream_id=%s",
+                            getattr(s, 'session_id', session_id),
+                            stream_id,
+                            getattr(s, 'active_stream_id', None),
+                        )
+                        return
+                    _now = int(time.time())
+                    _display_user = {'role': 'user', 'content': msg_text, 'timestamp': _now}
+                    if attachments:
+                        _display_attachments = [_attachment_name(a) for a in attachments if _attachment_name(a)]
+                        if _display_attachments:
+                            _display_user['attachments'] = _display_attachments
+                    _display_assistant = {'role': 'assistant', 'content': _remote_answer, 'timestamp': _now}
+                    _display_assistant['_turnDuration'] = round(_turn_duration_seconds, 3)
+                    if _turn_tps is not None:
+                        _display_assistant['_turnTps'] = _turn_tps
+                    s.messages = [*_previous_messages, _display_user, _display_assistant]
+                    s.context_messages = [
+                        *_history,
+                        {'role': 'user', 'content': _message_text_content(user_message)},
+                        {'role': 'assistant', 'content': _remote_answer},
+                    ]
+                    if input_tokens > 0:
+                        s.input_tokens = input_tokens
+                    if output_tokens > 0:
+                        s.output_tokens = output_tokens
+                    s.active_stream_id = None
+                    s.pending_user_message = None
+                    s.pending_attachments = []
+                    s.pending_started_at = None
+                    s.save()
+                    try:
+                        append_turn_journal_event_for_stream(
+                            s.session_id,
+                            stream_id,
+                            {
+                                "event": "completed",
+                                "created_at": time.time(),
+                                "assistant_message_index": len(s.messages) - 1,
+                            },
+                        )
+                    except Exception:
+                        logger.debug("Failed to append completed turn journal event", exc_info=True)
+                raw_session = s.compact() | {'messages': s.messages, 'tool_calls': []}
+                put('done', {'session': redact_session_data(raw_session), 'usage': usage})
+                meter_stats = meter().get_stats()
+                meter_stats['session_id'] = session_id
+                meter_stats.setdefault('tps_available', False)
+                meter_stats.setdefault('estimated', False)
+                put('metering', meter_stats)
+                put('stream_end', {'session_id': session_id})
+                return
 
             # Initialize SessionDB so session_search works in WebUI sessions
             _session_db = None
@@ -3442,10 +3706,6 @@ def _run_agent_streaming(
                 _session_db = SessionDB()
             except Exception as _db_err:
                 print(f"[webui] WARNING: SessionDB init failed — session_search will be unavailable: {_db_err}", flush=True)
-            resolved_model, resolved_provider, resolved_base_url = resolve_model_provider(
-                model_with_provider_context(model, provider_context)
-            )
-
             # Resolve API key via Hermes runtime provider (matches gateway behaviour).
             # Pass the resolved provider so non-default providers get their own credentials.
             resolved_api_key = None
