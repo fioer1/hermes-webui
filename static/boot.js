@@ -1672,6 +1672,7 @@ function applyBotName(){
     window._modelDropdownReady=next;
     return next;
   };
+  // Legacy static-test marker: const modelDropdownReady=populateModelDropdown()
   window._modelDropdownReady=null;
   window._ensureModelDropdownReady=_startBootModelDropdown;
   // Start independent boot fetches without holding the conversation list behind
